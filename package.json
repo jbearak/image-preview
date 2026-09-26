@@ -2,7 +2,7 @@
   "name": "svg-png-preview",
   "displayName": "SVG & PNG Preview",
   "description": "Preview SVG and PNG files against the current VS Code editor background, with adaptive zoom controls.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "jbearak",
   "license": "GPL-3.0-only",
   "repository": {
