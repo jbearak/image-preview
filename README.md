@@ -20,8 +20,10 @@ Open an SVG or PNG. To make this extension the persistent choice, run
 **View: Reopen Editor With...**, choose **Configure default editor for `*.svg`**
 or **Configure default editor for `*.png`**, and select **SVG & PNG Preview**.
 
-Click **Fit** in the status bar to choose another zoom level. **Fit Width** fills
-the available width and allows vertical scrolling for tall images. The command
+Click **Fit** in the status bar or right-click the preview to choose another zoom
+level. **Fit** scales the image up or down to fill the available space while
+keeping the whole image visible. **Fit Width** fills the available width and
+allows vertical scrolling for tall images. The command
 palette also provides **SVG & PNG Preview: Zoom In** and
 **SVG & PNG Preview: Zoom Out**.
 

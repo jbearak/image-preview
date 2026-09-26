@@ -30,6 +30,13 @@ const ZOOM_MODE_LABELS = {
     fitWidth: 'Fit Width'
 };
 const ZOOM_LEVELS = [0.1, 0.2, 0.3, 0.5, 0.75, 1, 1.5, 2, 3, 5, 10];
+const ZOOM_CHOICES = [
+    ...Object.entries(ZOOM_MODE_LABELS).map(([zoom, label]) => ({ label, zoom })),
+    { label: 'Actual Size', zoom: 1 },
+    ...ZOOM_LEVELS
+        .filter(level => level !== 1)
+        .map(level => ({ label: `${Math.round(level * 100)}%`, zoom: level }))
+];
 
 class ImagePreviewProvider {
     /** @param {vscode.ExtensionContext} context */
@@ -207,14 +214,7 @@ class ImagePreviewProvider {
             return;
         }
 
-        const choices = [
-            ...Object.entries(ZOOM_MODE_LABELS).map(([zoom, label]) => ({ label, zoom })),
-            { label: 'Actual Size', zoom: 1 },
-            ...ZOOM_LEVELS
-                .filter(level => level !== 1)
-                .map(level => ({ label: `${Math.round(level * 100)}%`, zoom: level }))
-        ];
-        const choice = await vscode.window.showQuickPick(choices, {
+        const choice = await vscode.window.showQuickPick(ZOOM_CHOICES, {
             placeHolder: 'Select image zoom level'
         });
         if (choice) {
@@ -292,10 +292,6 @@ class ImagePreviewProvider {
             max-height: none;
             margin: auto;
         }
-        body.fit #image {
-            max-width: 100vw;
-            max-height: 100vh;
-        }
         body.fit-width #canvas {
             width: 100%;
         }
@@ -317,7 +313,11 @@ class ImagePreviewProvider {
         #context-menu {
             position: fixed;
             z-index: 1;
-            min-width: 120px;
+            width: 160px;
+            max-width: calc(100vw - 8px);
+            max-height: calc(100vh - 8px);
+            overflow-y: auto;
+            box-sizing: border-box;
             padding: 4px;
             background: var(--vscode-menu-background);
             border: 1px solid var(--vscode-menu-border);
@@ -326,6 +326,7 @@ class ImagePreviewProvider {
         }
         #context-menu button {
             width: 100%;
+            box-sizing: border-box;
             padding: 4px 20px;
             color: var(--vscode-menu-foreground);
             background: transparent;
@@ -333,8 +334,13 @@ class ImagePreviewProvider {
             font: inherit;
             text-align: left;
         }
+        #context-menu button:first-child {
+            border-bottom: 1px solid var(--vscode-menu-border);
+            margin-bottom: 4px;
+            padding-bottom: 8px;
+        }
         #context-menu button:hover,
-        #context-menu button:focus {
+        #context-menu.keyboard-navigation button:focus {
             color: var(--vscode-menu-selectionForeground);
             background: var(--vscode-menu-selectionBackground);
             outline: none;
@@ -344,13 +350,19 @@ class ImagePreviewProvider {
 <body class="fit">
     <div id="canvas"><img id="image" src="${escapeHtml(src)}" crossorigin="anonymous" tabindex="0" alt=""></div>
     <div id="error">Unable to load the ${escapeHtml(format.label)}.</div>
-    <div id="context-menu" role="menu" hidden><button type="button" role="menuitem">Copy</button></div>
+    <div id="context-menu" role="menu" hidden>
+        <button type="button" role="menuitem">Copy</button>
+        ${ZOOM_CHOICES.map(choice => `<button type="button" role="menuitemradio" aria-checked="false">${escapeHtml(choice.label)}</button>`).join('\n        ')}
+    </div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
         const canvas = document.getElementById('canvas');
         const image = document.getElementById('image');
         const contextMenu = document.getElementById('context-menu');
-        const copyButton = contextMenu.querySelector('button');
+        const menuButtons = Array.from(contextMenu.querySelectorAll('button'));
+        const copyButton = menuButtons[0];
+        const zoomButtons = menuButtons.slice(1);
+        const zoomChoices = ${JSON.stringify(ZOOM_CHOICES)};
         const format = ${JSON.stringify({
             copyStrategy: format.copyStrategy,
             label: format.label,
@@ -392,7 +404,11 @@ class ImagePreviewProvider {
             image.style.width = '';
             image.style.height = '';
 
-            if (!isFit && !isFitWidth) {
+            if (isFit && image.naturalWidth && image.naturalHeight) {
+                const scale = Math.min(innerWidth / image.naturalWidth, innerHeight / image.naturalHeight);
+                image.style.width = Math.min(innerWidth, Math.round(image.naturalWidth * scale)) + 'px';
+                image.style.height = Math.min(innerHeight, Math.round(image.naturalHeight * scale)) + 'px';
+            } else if (!isFit && !isFitWidth) {
                 const width = image.naturalWidth || image.clientWidth || 1;
                 const height = image.naturalHeight || image.clientHeight || 1;
                 const layout = numericZoomLayout(width, height, zoom);
@@ -401,6 +417,10 @@ class ImagePreviewProvider {
                 canvas.style.width = layout.canvasWidth;
                 canvas.style.height = layout.canvasHeight;
             }
+
+            zoomButtons.forEach((button, index) => {
+                button.setAttribute('aria-checked', String(zoomChoices[index].zoom === zoom));
+            });
 
             vscode.setState({ zoom });
             if (report) {
@@ -524,6 +544,7 @@ class ImagePreviewProvider {
                 return;
             }
             contextMenuInvoker = event.target;
+            contextMenu.classList.toggle('keyboard-navigation', !event.clientX && !event.clientY);
             contextMenu.hidden = false;
 
             const menuBounds = contextMenu.getBoundingClientRect();
@@ -544,11 +565,22 @@ class ImagePreviewProvider {
             copyImage();
         });
 
+        zoomButtons.forEach((button, index) => {
+            button.addEventListener('click', () => {
+                hideContextMenu(true);
+                applyZoom(zoomChoices[index].zoom);
+            });
+        });
+
         document.addEventListener('pointerdown', event => {
             if (!contextMenu.contains(event.target)) {
                 hideContextMenu();
             }
         }, true);
+
+        contextMenu.addEventListener('pointermove', () => {
+            contextMenu.classList.remove('keyboard-navigation');
+        });
 
         document.addEventListener('keydown', event => {
             if (contextMenu.hidden) {
@@ -559,7 +591,12 @@ class ImagePreviewProvider {
                 hideContextMenu(true);
             } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
                 event.preventDefault();
-                copyButton.focus();
+                contextMenu.classList.add('keyboard-navigation');
+                const index = menuButtons.indexOf(document.activeElement);
+                const next = event.key === 'Home' ? 0
+                    : event.key === 'End' ? menuButtons.length - 1
+                    : (index + (event.key === 'ArrowDown' ? 1 : menuButtons.length - 1)) % menuButtons.length;
+                menuButtons[next].focus();
             } else if (event.key === 'Tab') {
                 hideContextMenu();
             }
@@ -581,7 +618,16 @@ class ImagePreviewProvider {
         });
 
         window.addEventListener('blur', () => hideContextMenu());
-        window.addEventListener('scroll', () => hideContextMenu(), true);
+        window.addEventListener('scroll', event => {
+            if (!contextMenu.contains(event.target)) {
+                hideContextMenu();
+            }
+        }, true);
+        window.addEventListener('resize', () => {
+            if (zoom === 'fit') {
+                applyZoom(zoom, false);
+            }
+        });
 
         window.addEventListener('message', event => {
             const message = event.data;
