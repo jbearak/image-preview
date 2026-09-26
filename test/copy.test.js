@@ -65,6 +65,8 @@ function runPreviewScript({
     fetchOk = true,
     format = 'svg',
     imageReady = true,
+    imageWidth = 100,
+    imageHeight = 50,
     sourceBytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]),
     sourceType = 'image/png',
     storedState
@@ -77,15 +79,16 @@ function runPreviewScript({
     const fetchCalls = [];
     let canvasCreations = 0;
     const body = { classList: createClassList() };
+    const viewport = { width: 800, height: 600 };
     const previewCanvas = { style: {} };
     const imageSrc = `webview://preview/image.${format}`;
     const image = createEventTarget({
         complete: imageReady,
         currentSrc: imageSrc,
-        naturalWidth: imageReady ? 100 : 0,
-        naturalHeight: imageReady ? 50 : 0,
-        clientWidth: 100,
-        clientHeight: 50,
+        naturalWidth: imageReady ? imageWidth : 0,
+        naturalHeight: imageReady ? imageHeight : 0,
+        clientWidth: imageWidth,
+        clientHeight: imageHeight,
         src: imageSrc,
         style: {},
         focus() {},
@@ -93,22 +96,42 @@ function runPreviewScript({
             return { left: 10, top: 20, width: 100, height: 50 };
         }
     });
-    const copyButton = createEventTarget({ focus() {} });
+    let document;
+    function createMenuButton(label) {
+        return createEventTarget({
+            label,
+            attributes: {},
+            focus() {
+                document.activeElement = this;
+            },
+            setAttribute(name, value) {
+                this.attributes[name] = value;
+            }
+        });
+    }
+    const copyButton = createMenuButton('Copy');
+    const zoomButtons = Array.from(
+        html.matchAll(/<button type="button" role="menuitemradio"[^>]*>([^<]+)<\/button>/g),
+        ([, label]) => createMenuButton(label)
+    );
+    const menuButtons = [copyButton, ...zoomButtons];
     const contextMenu = createEventTarget({
+        classList: createClassList(),
         hidden: true,
         style: {},
-        querySelector() {
-            return copyButton;
+        querySelectorAll() {
+            return menuButtons;
         },
         contains(target) {
-            return target === copyButton;
+            return target === contextMenu || menuButtons.includes(target);
         },
         getBoundingClientRect() {
             return { width: 120, height: 24 };
         }
     });
-    const document = createEventTarget({
+    document = createEventTarget({
         body,
+        activeElement: null,
         getElementById(id) {
             return { canvas: previewCanvas, image, 'context-menu': contextMenu }[id];
         },
@@ -169,8 +192,12 @@ function runPreviewScript({
                 }
             };
         },
-        innerHeight: 600,
-        innerWidth: 800,
+        get innerHeight() {
+            return viewport.height;
+        },
+        get innerWidth() {
+            return viewport.width;
+        },
         navigator: {
             clipboard: {
                 async write(items) {
@@ -191,12 +218,14 @@ function runPreviewScript({
         clipboardWrites,
         contextMenu,
         copyButton,
+        zoomButtons,
         document,
         drawCalls,
         fetchCalls,
         image,
         messages,
         previewCanvas,
+        viewport,
         window
     };
 }
@@ -205,13 +234,27 @@ async function flushCopy() {
     await new Promise(resolve => setImmediate(resolve));
 }
 
-test('uses a single custom Copy item instead of native webview menu commands', () => {
+test('places zoom levels below Copy in the custom menu', () => {
     assert.equal(manifest.contributes.menus['webview/context'], undefined);
     const html = getPreviewHtml();
 
     assert.equal(html.match(/role="menuitem"/g)?.length, 1);
-    assert.match(html, />Copy<\/button>/);
+    assert.match(html, />Copy<\/button>[\s\S]*?>Fit<\/button>[\s\S]*?>Fit Width<\/button>[\s\S]*?>Actual Size<\/button>/);
+    assert.match(html, />10%<\/button>/);
+    assert.match(html, />1000%<\/button>/);
     assert.doesNotMatch(html, />Cut<|>Paste</);
+});
+
+test('keeps the context menu compact and highlights keyboard focus only during keyboard navigation', () => {
+    const html = getPreviewHtml();
+    const menuRule = html.match(/#context-menu \{([\s\S]*?)\}/)[1];
+    const buttonRule = html.match(/#context-menu button \{([\s\S]*?)\}/)[1];
+
+    assert.match(menuRule, /width: 160px/);
+    assert.match(menuRule, /max-width: calc\(100vw - 8px\)/);
+    assert.match(buttonRule, /box-sizing: border-box/);
+    assert.match(html, /#context-menu\.keyboard-navigation button:focus/);
+    assert.doesNotMatch(html, /#context-menu button:focus \{/);
 });
 
 test('limits webview connections to its resource source', () => {
@@ -230,19 +273,16 @@ test('shows format-specific load errors', () => {
     assert.match(getPreviewHtml('png'), /Unable to load the PNG\./);
 });
 
-test('provides separate Fit and width-only Fit Width layouts', () => {
+test('provides a width-only Fit Width layout', () => {
     const html = getPreviewHtml();
     const pageRule = html.match(/html, body \{([\s\S]*?)\}/)[1];
     const imageRule = html.match(/\n        #image \{([\s\S]*?)\}/)[1];
-    const fitRule = html.match(/body\.fit #image \{([\s\S]*?)\}/)[1];
     const fitWidthCanvasRule = html.match(/body\.fit-width #canvas \{([\s\S]*?)\}/)[1];
     const fitWidthRule = html.match(/body\.fit-width #image \{([\s\S]*?)\}/)[1];
 
     assert.match(pageRule, /padding: 0/);
     assert.match(imageRule, /max-width: none/);
     assert.match(imageRule, /max-height: none/);
-    assert.match(fitRule, /max-width: 100vw/);
-    assert.match(fitRule, /max-height: 100vh/);
     assert.match(fitWidthCanvasRule, /width: 100%/);
     assert.match(fitWidthRule, /width: 100%/);
     assert.doesNotMatch(fitWidthRule, /max-height/);
@@ -259,7 +299,7 @@ test('switches between Fit, Fit Width, and numeric zoom layouts', () => {
     assert.equal(preview.body.classList.contains('fit'), true);
     assert.equal(preview.body.classList.contains('fit-width'), false);
     assert.equal(preview.body.classList.contains('numeric-zoom'), false);
-    assert.equal(preview.image.style.height, '');
+    assert.equal(preview.image.style.height, '400px');
 
     preview.window.dispatch('message', { data: { type: 'setZoom', zoom: 'fitWidth' } });
     assert.equal(preview.body.classList.contains('fit'), false);
@@ -267,6 +307,38 @@ test('switches between Fit, Fit Width, and numeric zoom layouts', () => {
     assert.equal(preview.body.classList.contains('numeric-zoom'), false);
     assert.equal(preview.previewCanvas.style.height, '');
     assert.equal(preview.image.style.height, '');
+});
+
+test('Fit expands a small image to the largest size inside the viewport', () => {
+    const preview = runPreviewScript();
+
+    preview.image.dispatch('load');
+
+    assert.equal(preview.image.style.width, '800px');
+    assert.equal(preview.image.style.height, '400px');
+});
+
+test('Fit shrinks a large image without changing its aspect ratio', () => {
+    const preview = runPreviewScript({ imageWidth: 1600, imageHeight: 800 });
+
+    preview.image.dispatch('load');
+
+    assert.equal(preview.image.style.width, '800px');
+    assert.equal(preview.image.style.height, '400px');
+});
+
+test('Fit uses viewport height for tall images and updates on resize', () => {
+    const preview = runPreviewScript({ imageWidth: 100, imageHeight: 200 });
+    preview.image.dispatch('load');
+
+    assert.equal(preview.image.style.width, '300px');
+    assert.equal(preview.image.style.height, '600px');
+
+    preview.viewport.width = 200;
+    preview.window.dispatch('resize');
+
+    assert.equal(preview.image.style.width, '200px');
+    assert.equal(preview.image.style.height, '400px');
 });
 
 test('restores Fit as a persisted zoom mode', () => {
@@ -295,7 +367,7 @@ test('suppresses native edit actions while the preview is unavailable', () => {
     assert.equal(preview.contextMenu.hidden, true);
 });
 
-test('keeps keyboard navigation inside the single-item menu', () => {
+test('navigates the context menu with arrow and boundary keys', () => {
     const preview = runPreviewScript();
     preview.document.dispatch('contextmenu', {
         clientX: 40,
@@ -313,9 +385,68 @@ test('keeps keyboard navigation inside the single-item menu', () => {
     });
     assert.equal(prevented, true);
     assert.equal(preview.contextMenu.hidden, false);
+    assert.equal(preview.document.activeElement, preview.zoomButtons[0]);
+    assert.equal(preview.contextMenu.classList.contains('keyboard-navigation'), true);
+
+    preview.contextMenu.dispatch('pointermove');
+    assert.equal(preview.contextMenu.classList.contains('keyboard-navigation'), false);
+
+    preview.document.dispatch('keydown', { key: 'End', preventDefault() {} });
+    assert.equal(preview.document.activeElement, preview.zoomButtons.at(-1));
+    assert.equal(preview.contextMenu.classList.contains('keyboard-navigation'), true);
+    preview.document.dispatch('keydown', { key: 'ArrowDown', preventDefault() {} });
+    assert.equal(preview.document.activeElement, preview.copyButton);
 
     preview.document.dispatch('keydown', { key: 'Tab' });
     assert.equal(preview.contextMenu.hidden, true);
+});
+
+test('scrolling zoom levels keeps the menu open while preview scrolling closes it', () => {
+    const preview = runPreviewScript();
+    preview.document.dispatch('contextmenu', {
+        clientX: 40,
+        clientY: 50,
+        preventDefault() {},
+        target: preview.image
+    });
+
+    preview.window.dispatch('scroll', { target: preview.contextMenu });
+    assert.equal(preview.contextMenu.hidden, false);
+
+    preview.window.dispatch('scroll', { target: preview.previewCanvas });
+    assert.equal(preview.contextMenu.hidden, true);
+});
+
+test('context menu zoom levels apply and report the selected scale', () => {
+    const preview = runPreviewScript();
+    preview.image.dispatch('load');
+    preview.document.dispatch('contextmenu', {
+        clientX: 40,
+        clientY: 50,
+        preventDefault() {},
+        target: preview.image
+    });
+
+    const actualSize = preview.zoomButtons.find(button => button.label === 'Actual Size');
+    actualSize.dispatch('click');
+
+    assert.equal(preview.contextMenu.hidden, true);
+    assert.equal(preview.body.classList.contains('numeric-zoom'), true);
+    assert.equal(preview.image.style.width, '100px');
+    assert.equal(actualSize.attributes['aria-checked'], 'true');
+    assert.equal(preview.messages.at(-1).type, 'zoom');
+    assert.equal(preview.messages.at(-1).zoom, 1);
+
+    preview.document.dispatch('contextmenu', {
+        clientX: 40,
+        clientY: 50,
+        preventDefault() {},
+        target: preview.image
+    });
+    preview.zoomButtons.find(button => button.label === 'Fit').dispatch('click');
+    assert.equal(preview.image.style.width, '800px');
+    assert.equal(preview.image.style.height, '400px');
+    assert.equal(preview.messages.at(-1).zoom, 'fit');
 });
 
 test('copies SVG from the rendered canvas', async () => {
